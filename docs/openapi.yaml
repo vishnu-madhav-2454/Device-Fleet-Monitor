@@ -1,0 +1,200 @@
+openapi: 3.0.3
+info:
+  title: Device Fleet Monitor API
+  version: 1.0.0
+  description: >
+    Tracks heartbeats from a fleet of devices and reports each device's
+    ONLINE/OFFLINE status based on a 30-second timeout rule.
+servers:
+  - url: http://localhost:3000
+
+paths:
+  /devices:
+    post:
+      summary: Register a device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterDeviceRequest"
+      responses:
+        "201":
+          description: Device registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "400":
+          description: Missing/invalid id or name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A device with this id is already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: List devices
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by computed status
+          schema:
+            type: string
+            enum: [ONLINE, OFFLINE]
+      responses:
+        "200":
+          description: List of devices with current status
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Device"
+        "400":
+          description: Invalid status filter value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /devices/{id}:
+    get:
+      summary: Get a single device's details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Device details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "404":
+          description: Device not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /devices/{id}/heartbeat:
+    post:
+      summary: Record a heartbeat for a registered device
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
+      responses:
+        "200":
+          description: Heartbeat recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "400":
+          description: Invalid timestamp
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Device not registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /summary:
+    get:
+      summary: Fleet-wide status summary
+      responses:
+        "200":
+          description: Counts of total/online/offline devices
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Summary"
+
+components:
+  schemas:
+    RegisterDeviceRequest:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          example: device-01
+        name:
+          type: string
+          example: Lab Device 01
+
+    HeartbeatRequest:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Defaults to server time if omitted
+        status:
+          type: string
+          example: OK
+        cpu_usage:
+          type: number
+          example: 42
+        signal_strength:
+          type: number
+          example: -71
+      additionalProperties: true
+
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [ONLINE, OFFLINE]
+        last_heartbeat:
+          type: string
+          format: date-time
+          nullable: true
+        metrics:
+          type: object
+          nullable: true
+          description: The extra fields from the most recent heartbeat, if any
+          additionalProperties: true
+
+    Summary:
+      type: object
+      properties:
+        total:
+          type: integer
+        online:
+          type: integer
+        offline:
+          type: integer
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string

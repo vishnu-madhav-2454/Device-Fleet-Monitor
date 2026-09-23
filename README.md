@@ -8,29 +8,43 @@ heard from.
 
 - Registers devices by id/name
 - Accepts a heartbeat from a registered device (with optional metrics like
-  `cpu_usage`, `signal_strength`)
-- Lists all devices with their current computed status
+  `cpu_usage`, `signal_strength`, returned back on the device going forward)
+- Lists all devices with their current computed status, optionally filtered
+  by `?status=ONLINE|OFFLINE`
 - Returns details for a single device
 - Returns a fleet-wide summary (`total` / `online` / `offline`)
 - Applies a rolling 30-second timeout: a device is `ONLINE` if its last
   heartbeat was within the last 30 seconds, otherwise `OFFLINE`
+- Persists device state to disk so it survives a restart
+- Serves a small read-only dashboard UI at `/`
 
 ## Design / Architecture
 
-- **Express** app split into three layers:
-  - `src/deviceStore.js` — pure in-memory state and business logic (status
-    computation, the 30s timeout rule). No HTTP concerns here, which is what
-    makes it easy to unit-test directly and via the API.
+- **Express** app split into layers:
+  - `src/deviceStore.js` — in-memory state and business logic (status
+    computation, the 30s timeout rule, filtering). No HTTP concerns here,
+    which is what makes it easy to unit-test directly and via the API.
+  - `src/persistence.js` — loads/saves the store's state to a JSON file, so
+    the store module doesn't need to know how or where state is durable.
   - `src/routes/devices.js` — HTTP layer: request validation, status codes,
     error shapes. Thin — it delegates all state logic to the store.
-  - `src/app.js` / `src/server.js` — app wiring and process entrypoint,
-    separated so tests can create an app instance without binding a port.
+  - `src/app.js` / `src/server.js` — app wiring, request logging, static
+    dashboard, and process entrypoint, separated so tests can create an app
+    instance without binding a port.
+  - `src/config.js` / `src/logger.js` — centralized env-based configuration
+    and structured (JSON line) logging used throughout.
 - **Status is computed on read, not on a timer.** There's no background job
   flipping devices to OFFLINE; every `GET` recomputes `now - lastHeartbeatAt
   <= 30s` at request time. This avoids race conditions between a timer and
   concurrent reads/writes, and keeps the store free of scheduling concerns.
-- **Storage is in-memory** (a `Map`), which is intentional for the scope of
-  this exercise — see Known Limitations.
+- **Concurrency safety**: Node runs the store's synchronous get/set logic on
+  a single thread, so two "simultaneous" requests can't interleave mid
+  read-modify-write the way they could with real parallel threads. This is
+  exercised directly in `tests/devices.test.js` (50 concurrent heartbeats,
+  20 concurrent registrations).
+- **Storage** is a JSON file on disk (`data/devices.json` by default, via
+  `src/persistence.js`), written synchronously on every mutation — see
+  Known Limitations for why this isn't a real database.
 
 ## Prerequisites
 
@@ -46,13 +60,27 @@ npm install
 There is no separate build step — this is plain Node.js (CommonJS), no
 bundler or transpiler required.
 
+## Configuration
+
+All optional, via environment variables:
+
+| Variable            | Default                 | Purpose                                   |
+|---------------------|--------------------------|--------------------------------------------|
+| `PORT`               | `3000`                  | HTTP port                                  |
+| `ONLINE_TIMEOUT_MS`  | `30000`                 | Heartbeat timeout window (spec default: 30s) |
+| `DATA_FILE`          | `data/devices.json`     | Where device state is persisted            |
+| `LOG_LEVEL`          | `info`                  | `error` \| `warn` \| `info` \| `debug`     |
+
 ## How to run the application
 
 ```bash
 npm start
 ```
 
-Starts the API on `http://localhost:3000` (override with `PORT=<port>`).
+Starts the API on `http://localhost:3000` (configurable, see above). Visit
+`http://localhost:3000` in a browser for a live dashboard of device status.
+Stop it with `Ctrl+C` for a graceful shutdown (drains in-flight requests
+before exiting — see Known Limitations for a Windows-specific caveat).
 
 ## How to run the simulator
 
@@ -119,6 +147,18 @@ Fleet summary:
 curl http://localhost:3000/summary
 ```
 
+Filter devices by status:
+
+```bash
+curl "http://localhost:3000/devices?status=ONLINE"
+```
+
+## API documentation
+
+A full OpenAPI 3.0 spec is at [`docs/openapi.yaml`](docs/openapi.yaml).
+Paste its contents into https://editor.swagger.io (or open it with any
+OpenAPI-aware editor plugin) for an interactive, browsable view.
+
 ## Assumptions
 
 - A device must be registered before it can send a heartbeat (`POST
@@ -133,46 +173,64 @@ curl http://localhost:3000/summary
 
 ## Known limitations
 
-- **In-memory storage only** — all state is lost on restart; not suitable
-  for multiple server instances/horizontal scaling as-is.
+- **JSON-file storage, not a real database** — fine for a single instance
+  and this exercise's scale, but not for multiple server
+  instances/horizontal scaling (they'd stomp on the same file), and every
+  write blocks the event loop briefly (synchronous by design, to keep
+  writes from interleaving — see Design/Architecture).
 - **No authentication/authorization** — any client can register devices or
   send heartbeats for any device id.
 - **No persistence of heartbeat history** — only the latest heartbeat and
   metrics are kept per device, not a time series.
 - **No rate limiting** on heartbeat/registration endpoints.
+- **Graceful shutdown is Windows-limited** — Node doesn't support `SIGTERM`
+  on Windows at all, and `SIGINT` only reaches the handler via a real
+  interactive `Ctrl+C` in a console window (not when delivered
+  programmatically, e.g. from a script). Both signals work as coded on
+  Linux/macOS, which is the more common deployment target (Docker,
+  systemd, PM2, etc.).
+- **The simulator's "stop a device" control is interactive** (type a
+  number, press Enter in its own terminal) — it wasn't practical to
+  automate that keystroke against a backgrounded process while testing in
+  this environment, so the OFFLINE transition was instead verified
+  directly against the live API (register → heartbeat → wait 30s+ → status
+  flips to OFFLINE), which exercises the same underlying logic.
 
 ## What I'd improve with one more day
 
-- Add persistent storage (e.g. SQLite) behind the same store interface so
-  the rest of the app wouldn't need to change.
-- Add structured logging (request id, latency) instead of `console.log`.
-- Add graceful shutdown (drain in-flight requests on SIGTERM).
-- Add a minimal read-only dashboard UI over `GET /devices` and `GET
-  /summary`.
-- Add configuration via environment variables for the timeout window and
-  port instead of the hardcoded 30s constant.
-- Add concurrency/load tests to validate behavior under many simultaneous
-  heartbeats.
+- Swap the JSON-file store for a real embedded database (e.g. SQLite)
+  behind the same store interface, so the rest of the app wouldn't need to
+  change.
+- Add authentication (e.g. a per-device API key issued at registration).
+- Add rate limiting on heartbeat/registration endpoints.
+- Add request tracing (correlation ids threaded through the structured
+  logs) and basic metrics (request counts/latency histograms).
+- Containerize it (deliberately left out of this submission).
 
 ## AI Usage
 
 - **Tool used:** Claude (Claude Code), for scaffolding and pairing on this
-  implementation.
-- **What it was used for:** setting up the Express project structure,
-  writing the device store/route/test code from the spec, drafting this
-  README, and running the test suite and a manual end-to-end smoke test
-  (server + simulator, including the stop-a-device-and-watch-it-go-OFFLINE
-  scenario) to verify behavior.
-- **Something changed/verified:** the status-computation approach was
-  deliberately kept as "compute on read" rather than a background interval
-  timer, to avoid a class of race conditions between a timer thread and
-  concurrent request handling — this was a design choice checked against
-  the spec's requirement that "the status returned by the APIs should
-  reflect this rule automatically," which only requires correctness at
-  read time, not a live-updating background process.
-- **Personally verified before submitting:** ran `npm test` (15/15 passing)
-  and manually ran the server + simulator together, confirming a live
-  heartbeat marks a device `ONLINE`, and that stopping a device's
-  heartbeats causes it to show as `OFFLINE` in `GET /devices` after the
-  30-second window, via real HTTP requests rather than trusting the code
-  alone.
+  implementation end-to-end, including the core API, the optional
+  enhancements, and this documentation.
+- **What it was used for:** setting up the Express project structure;
+  writing the device store/route/test code from the spec; adding the
+  optional enhancements (file-backed persistence, structured logging,
+  graceful shutdown, env-based config, status filtering, exposing
+  heartbeat metrics, a small dashboard UI, an OpenAPI spec); and running
+  the test suite plus manual end-to-end checks against a live server.
+- **Something changed/rejected:** an initial attempt to verify graceful
+  shutdown by piping OS signals to a backgrounded process from a shell
+  script didn't reflect real behavior — on Windows, `SIGTERM` isn't
+  supported by Node at all, and a programmatically-delivered `SIGINT`
+  bypasses the handler entirely (only a real interactive `Ctrl+C` in a
+  console window triggers it). Rather than report the shutdown code as
+  "tested" based on a misleading test, that limitation is called out
+  explicitly in Known Limitations instead.
+- **Personally verified before submitting:** ran `npm test` (21/21
+  passing); ran the server standalone and confirmed registration,
+  heartbeats, filtering, and the 30-second ONLINE→OFFLINE transition over
+  real wall-clock time via `curl` (not just mocked timestamps in unit
+  tests); killed and restarted the server to confirm persisted state
+  actually reloads from disk; and opened the dashboard UI in a browser
+  with live seeded data to confirm the table, summary counts, and the
+  status filter dropdown all update correctly.
