@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+data/
+.git
+.gitignore
+coverage
+tests
+simulator
+docs
+*.md
+.claude
+CLAUDE.md

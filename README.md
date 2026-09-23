@@ -50,6 +50,8 @@ heard from.
 
 - Node.js 18+ (uses the built-in global `fetch`, used by the simulator)
 - npm
+- Docker + Docker Compose (optional — only needed if you want to run it
+  containerized instead of with `npm start`)
 
 ## How to build
 
@@ -81,6 +83,25 @@ Starts the API on `http://localhost:3000` (configurable, see above). Visit
 `http://localhost:3000` in a browser for a live dashboard of device status.
 Stop it with `Ctrl+C` for a graceful shutdown (drains in-flight requests
 before exiting — see Known Limitations for a Windows-specific caveat).
+
+### Running with Docker
+
+```bash
+docker compose up --build
+```
+
+This builds the image and starts the API on `http://localhost:3000`, with
+device state persisted to a named volume (`device-data`) so it survives
+`docker compose restart`/recreation. Without Compose:
+
+```bash
+docker build -t device-fleet-monitor .
+docker run -p 3000:3000 -v device-data:/app/data device-fleet-monitor
+```
+
+The simulator is not part of the image (it's a client-side test tool, not
+part of the running service) — run it from the host against the
+containerized API as usual: `npm run simulate`.
 
 ## How to run the simulator
 
@@ -205,7 +226,8 @@ OpenAPI-aware editor plugin) for an interactive, browsable view.
 - Add rate limiting on heartbeat/registration endpoints.
 - Add request tracing (correlation ids threaded through the structured
   logs) and basic metrics (request counts/latency histograms).
-- Containerize it (deliberately left out of this submission).
+- Publish a versioned image to a registry as part of a CI pipeline, rather
+  than only building it locally.
 
 ## AI Usage
 
@@ -226,11 +248,25 @@ OpenAPI-aware editor plugin) for an interactive, browsable view.
   console window triggers it). Rather than report the shutdown code as
   "tested" based on a misleading test, that limitation is called out
   explicitly in Known Limitations instead.
+- **A real bug found and fixed via testing, not just trusting the
+  generated code:** the first version of the Dockerfile declared
+  `/app/data` as a volume after switching to the non-root `node` user.
+  Testing it (registering a device, then checking the container's logs)
+  surfaced `EACCES: permission denied` on every write — Docker seeds a
+  fresh named volume with root ownership by default, which the non-root
+  process couldn't write to. Fixed by creating the directory and
+  `chown`-ing it to `node` *before* the `USER node` instruction, then
+  re-verified by destroying and recreating the container against the same
+  named volume and confirming the registered device was still there.
 - **Personally verified before submitting:** ran `npm test` (21/21
   passing); ran the server standalone and confirmed registration,
   heartbeats, filtering, and the 30-second ONLINE→OFFLINE transition over
   real wall-clock time via `curl` (not just mocked timestamps in unit
   tests); killed and restarted the server to confirm persisted state
-  actually reloads from disk; and opened the dashboard UI in a browser
-  with live seeded data to confirm the table, summary counts, and the
-  status filter dropdown all update correctly.
+  actually reloads from disk; opened the dashboard UI in a browser with
+  live seeded data to confirm the table, summary counts, and the status
+  filter dropdown all update correctly; and built + ran the Docker image
+  (both directly and via `docker compose up`), including destroying and
+  recreating the container to confirm the persisted volume actually
+  survives, before cleaning up every test container/image/volume created
+  along the way.

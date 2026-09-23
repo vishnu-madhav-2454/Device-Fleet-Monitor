@@ -1,0 +1,16 @@
+name: device-fleet-monitor
+
+services:
+  device-fleet-monitor:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - ONLINE_TIMEOUT_MS=30000
+      - LOG_LEVEL=info
+    volumes:
+      - device-data:/app/data
+
+volumes:
+  device-data:
