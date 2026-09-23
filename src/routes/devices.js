@@ -33,8 +33,16 @@ router.post("/devices/:id/heartbeat", (req, res) => {
   return res.status(200).json(device);
 });
 
-router.get("/devices", (_req, res) => {
-  res.status(200).json(store.list());
+router.get("/devices", (req, res) => {
+  const { status } = req.query;
+  if (status !== undefined) {
+    const normalized = String(status).toUpperCase();
+    if (normalized !== "ONLINE" && normalized !== "OFFLINE") {
+      return res.status(400).json({ error: "status must be ONLINE or OFFLINE" });
+    }
+    return res.status(200).json(store.list({ status: normalized }));
+  }
+  return res.status(200).json(store.list());
 });
 
 router.get("/devices/:id", (req, res) => {

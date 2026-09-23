@@ -107,6 +107,48 @@ describe("Device Fleet Monitor API", () => {
       const res = await request(app).get("/devices/does-not-exist");
       expect(res.status).toBe(404);
     });
+
+    it("filters devices by status=ONLINE", async () => {
+      await request(app).post("/devices").send({ id: "device-01", name: "Online One" });
+      await request(app).post("/devices").send({ id: "device-02", name: "Offline One" });
+      await request(app)
+        .post("/devices/device-01/heartbeat")
+        .send({ timestamp: new Date().toISOString(), status: "OK" });
+
+      const res = await request(app).get("/devices?status=ONLINE");
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(1);
+      expect(res.body[0].id).toBe("device-01");
+    });
+
+    it("filters devices by status=OFFLINE", async () => {
+      await request(app).post("/devices").send({ id: "device-01", name: "Never Beat" });
+      const res = await request(app).get("/devices?status=OFFLINE");
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(1);
+    });
+
+    it("rejects an invalid status filter value", async () => {
+      const res = await request(app).get("/devices?status=SLEEPING");
+      expect(res.status).toBe(400);
+    });
+
+    it("exposes heartbeat metrics on the device", async () => {
+      await request(app).post("/devices").send({ id: "device-01", name: "Metric Device" });
+      await request(app).post("/devices/device-01/heartbeat").send({
+        timestamp: new Date().toISOString(),
+        status: "OK",
+        cpu_usage: 42,
+        signal_strength: -71,
+      });
+
+      const res = await request(app).get("/devices/device-01");
+      expect(res.body.metrics).toMatchObject({
+        reported_status: "OK",
+        cpu_usage: 42,
+        signal_strength: -71,
+      });
+    });
   });
 
   describe("GET /summary", () => {
@@ -150,6 +192,42 @@ describe("Device Fleet Monitor API", () => {
       await request(app).post("/devices").send({ id: "device-01", name: "Lab Device 01" });
       const res = await request(app).get("/devices/device-01");
       expect(res.body.status).toBe("OFFLINE");
+    });
+  });
+
+  describe("concurrency", () => {
+    it("handles many simultaneous heartbeats for the same device without corrupting state", async () => {
+      await request(app).post("/devices").send({ id: "device-01", name: "Busy Device" });
+
+      const requests = Array.from({ length: 50 }, (_, i) =>
+        request(app)
+          .post("/devices/device-01/heartbeat")
+          .send({ timestamp: new Date().toISOString(), status: "OK", cpu_usage: i })
+      );
+      const results = await Promise.all(requests);
+
+      expect(results.every((r) => r.status === 200)).toBe(true);
+
+      const res = await request(app).get("/devices/device-01");
+      expect(res.body.status).toBe("ONLINE");
+      expect(res.body.last_heartbeat).not.toBeNull();
+
+      const summaryRes = await request(app).get("/summary");
+      expect(summaryRes.body).toEqual({ total: 1, online: 1, offline: 0 });
+    });
+
+    it("handles many simultaneous registrations without dropping or duplicating devices", async () => {
+      const requests = Array.from({ length: 20 }, (_, i) =>
+        request(app).post("/devices").send({ id: `device-${i}`, name: `Device ${i}` })
+      );
+      const results = await Promise.all(requests);
+
+      expect(results.every((r) => r.status === 201)).toBe(true);
+
+      const res = await request(app).get("/devices");
+      expect(res.body).toHaveLength(20);
+      const ids = new Set(res.body.map((d) => d.id));
+      expect(ids.size).toBe(20);
     });
   });
 });

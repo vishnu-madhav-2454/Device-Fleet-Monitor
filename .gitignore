@@ -4,6 +4,9 @@ coverage/
 .env
 .DS_Store
 
+# Runtime persisted state, not source
+data/
+
 # Editor / assistant local files (not part of submission)
 .claude/
 CLAUDE.md

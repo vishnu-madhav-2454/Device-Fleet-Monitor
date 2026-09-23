@@ -1,7 +1,18 @@
-const ONLINE_TIMEOUT_MS = 30 * 1000;
+const config = require("./config");
+const persistence = require("./persistence");
 
-// In-memory registry. Keyed by device id.
+const ONLINE_TIMEOUT_MS = config.ONLINE_TIMEOUT_MS;
+
+// In-memory registry. Keyed by device id. Seeded from disk on startup so
+// state survives a restart (see src/persistence.js).
 const devices = new Map();
+for (const record of persistence.load()) {
+  devices.set(record.id, record);
+}
+
+function persist() {
+  persistence.save(Array.from(devices.values()));
+}
 
 function computeStatus(device, now = Date.now()) {
   if (!device.lastHeartbeatAt) return "OFFLINE";
@@ -16,6 +27,7 @@ function toPublicDevice(device, now = Date.now()) {
     last_heartbeat: device.lastHeartbeatAt
       ? new Date(device.lastHeartbeatAt).toISOString()
       : null,
+    metrics: device.lastMetrics,
   };
 }
 
@@ -25,6 +37,7 @@ function register(id, name) {
   }
   const device = { id, name, lastHeartbeatAt: null, lastMetrics: null };
   devices.set(id, device);
+  persist();
   return { error: null, device: toPublicDevice(device) };
 }
 
@@ -38,13 +51,19 @@ function recordHeartbeat(id, { timestamp, status, ...extra }) {
   }
 
   device.lastHeartbeatAt = heartbeatTime;
-  device.lastMetrics = { status: status ?? "OK", ...extra };
+  // "reported_status" is the device's own self-reported health from the
+  // heartbeat payload (e.g. "OK"); it's distinct from the ONLINE/OFFLINE
+  // status this service computes from the timeout rule.
+  device.lastMetrics = { reported_status: status ?? "OK", ...extra };
+  persist();
   return { error: null, device: toPublicDevice(device) };
 }
 
-function list() {
+function list({ status } = {}) {
   const now = Date.now();
-  return Array.from(devices.values()).map((d) => toPublicDevice(d, now));
+  const all = Array.from(devices.values()).map((d) => toPublicDevice(d, now));
+  if (!status) return all;
+  return all.filter((d) => d.status === status);
 }
 
 function get(id) {
