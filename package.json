@@ -1,0 +1,19 @@
+{
+  "name": "device-fleet-monitor",
+  "version": "1.0.0",
+  "description": "Mini Device Fleet Monitor - tracks heartbeats from a fleet of simulated devices",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "simulate": "node simulator/simulate.js",
+    "test": "jest --runInBand"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  }
+}

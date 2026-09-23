@@ -1,0 +1,9 @@
+node_modules/
+coverage/
+*.log
+.env
+.DS_Store
+
+# Editor / assistant local files (not part of submission)
+.claude/
+CLAUDE.md
